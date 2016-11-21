@@ -19,6 +19,8 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import re
+
 from jinja2.exceptions import UndefinedError
 
 from ansible.compat.six import text_type
@@ -26,6 +28,8 @@ from ansible.errors import AnsibleError, AnsibleUndefinedVariable
 from ansible.playbook.attribute import FieldAttribute
 from ansible.template import Templar
 from ansible.module_utils._text import to_native
+
+DEFINED_REGEX = re.compile(r'([\w_]+)\s+(not\s+is|is|is\s+not)\s+(defined|undefined)')
 
 class Conditional:
 
@@ -61,6 +65,18 @@ class Conditional:
         if hasattr(self, '_get_parent_attribute'):
             when = self._get_parent_attribute('when', extend=True, prepend=True)
         return when
+
+    def extract_defined_undefined(self, conditional):
+        results = []
+
+        cond = conditional
+        m = DEFINED_REGEX.search(cond)
+        while m:
+            results.append(m.groups())
+            cond = cond[m.end():]
+            m = DEFINED_REGEX.search(cond)
+
+        return results
 
     def evaluate_conditional(self, templar, all_vars):
         '''
@@ -125,10 +141,19 @@ class Conditional:
             # variable was undefined. If we happened to be
             # looking for an undefined variable, return True,
             # otherwise fail
-            if "is undefined" in original or "is not defined" in original or "not is defined" in original:
-                return True
-            elif "is defined" in original or "is not undefined" in original or "not is undefined" in original:
-                return False
-            else:
+            try:
+                var_name = re.compile(r"'([\w_]+)' is undefined").search(str(e)).groups()[0]
+                def_undef = self.extract_defined_undefined(conditional)
+                for (du_var, logic, state) in def_undef:
+                    should_exist = ('not' in logic) != (state == 'defined')
+                    if var_name == du_var:
+                        if should_exist:
+                            return False
+                        else:
+                            return True
+                # nothing above matched the failed var name, so re-raise here to
+                # trigger the AnsibleUndefinedVariable exception again below
+                raise
+            except:
                 raise AnsibleUndefinedVariable("error while evaluating conditional (%s): %s" % (original, e))
 
